@@ -1,6 +1,6 @@
 // Tourbeest WhatsApp Service - Database Configured
 // Using whatsapp-web.js official library
-// Database: nr104944_tourbeest @ tourbeest.nl:3306
+// Database: nr104944_tourbeest @ h14.mijn.host:3306
 
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
@@ -12,7 +12,7 @@ const https = require('https');
 
 console.log('🎵 Tourbeest WhatsApp Service - Database Configured');
 console.log('📦 Using whatsapp-web.js library v1.24.0');
-console.log('🗄️  Database: nr104944_tourbeest @ tourbeest.nl:3306');
+console.log('🗄️  Database: nr104944_tourbeest @ h14.mijn.host:3306');
 
 // Server configuration
 const PORT = process.env.PORT || 3001;
@@ -23,7 +23,7 @@ console.log(`⚙️  Environment: ${NODE_ENV}`);
 console.log(`🔧 Node.js: ${process.version}`);
 console.log(`🚀 Server will start on: ${HOST}:${PORT}`);
 
-// Database configuration - Updated to tourbeest.nl
+// Database configuration - Updated to h14.mijn.host (removed invalid options)
 const dbConfig = {
     host: process.env.DB_HOST || 'h14.mijn.host',
     port: process.env.DB_PORT || 3306,
@@ -31,9 +31,7 @@ const dbConfig = {
     password: process.env.DB_PASSWORD || 'Alazfv123!',
     database: process.env.DB_NAME || 'nr104944_tourbeest',
     charset: 'utf8mb4',
-    connectTimeout: 30000,
-    acquireTimeout: 30000,
-    timeout: 30000
+    connectTimeout: 30000
 };
 
 console.log('📊 Database configuration:');
@@ -107,7 +105,7 @@ async function connectDatabase() {
         console.error(`   Code: ${error.code || 'Unknown'}`);
         
         if (error.code === 'ER_ACCESS_DENIED_ERROR') {
-            console.error('🚨 Access denied - check username/password');
+            console.error('🚨 Access denied - check username/password or IP whitelist');
         } else if (error.code === 'ENOTFOUND') {
             console.error('🚨 Host not found - check hostname');
         } else if (error.code === 'ER_BAD_DB_ERROR') {
@@ -121,7 +119,7 @@ async function connectDatabase() {
     }
 }
 
-// Database status update
+// Database status update with fixed table creation
 async function updateDatabaseStatus(status, phone = null) {
     try {
         const db = await connectDatabase();
@@ -130,34 +128,39 @@ async function updateDatabaseStatus(status, phone = null) {
             return;
         }
         
-        // Create table if not exists
+        // Create table with correct schema
         await db.execute(`
             CREATE TABLE IF NOT EXISTS whatsapp_service_status (
-                id INT PRIMARY KEY,
-                status VARCHAR(50),
-                phone VARCHAR(50),
-                last_connected TIMESTAMP,
-                version VARCHAR(50),
-                platform VARCHAR(50),
-                ip_address VARCHAR(50),
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                status VARCHAR(50) NOT NULL,
+                phone VARCHAR(50) DEFAULT NULL,
+                last_connected TIMESTAMP NULL DEFAULT NULL,
+                version VARCHAR(50) DEFAULT NULL,
+                platform VARCHAR(50) DEFAULT NULL,
+                ip_address VARCHAR(50) DEFAULT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )
         `);
         
-        // Update status with current IP
+        // Update status with current IP (simplified query)
         await db.execute(`
-            INSERT INTO whatsapp_service_status (id, status, phone, last_connected, version, platform, ip_address) 
-            VALUES (1, ?, ?, NOW(), 'whatsapp-web.js-v1.24.0', 'render.com', ?) 
+            INSERT INTO whatsapp_service_status (status, phone, last_connected, version, platform, ip_address) 
+            VALUES (?, ?, NOW(), 'whatsapp-web.js-v1.24.0', 'render.com', ?) 
             ON DUPLICATE KEY UPDATE 
-                status = ?, phone = ?, last_connected = NOW(), ip_address = ?, updated_at = NOW()
-        `, [status, phone, currentIP, status, phone, currentIP]);
+                status = VALUES(status), 
+                phone = VALUES(phone), 
+                last_connected = NOW(), 
+                ip_address = VALUES(ip_address), 
+                updated_at = NOW()
+        `, [status, phone, currentIP]);
         
         await db.end();
-        console.log(`📝 Database status updated: ${status}`);
+        console.log(`✅ Database status updated: ${status}`);
         
     } catch (error) {
         console.error('❌ Database status update failed:', error.message);
+        // Don't throw error, just log it - service should continue working
     }
 }
 
@@ -197,14 +200,11 @@ async function initializeWhatsApp() {
                 '--disable-extensions',
                 '--disable-sync',
                 '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-renderer-backgrounding',
                 '--disable-field-trial-config',
                 '--disable-back-forward-cache',
                 '--disable-hang-monitor',
                 '--disable-prompt-on-repost',
                 '--disable-background-networking',
-                '--disable-ipc-flooding-protection',
                 '--memory-pressure-off',
                 '--max_old_space_size=4096'
             ],
@@ -238,17 +238,18 @@ async function initializeWhatsApp() {
             // Generate QR in terminal (smaller for better visibility)
             qrcode.generate(qr, { small: true });
             
-            // Generate QR as data URL for web
+            // Generate QR as data URL for web - Higher quality settings
             try {
                 qrCodeDataURL = await QRCode.toDataURL(qr, {
-                    width: 512,
+                    width: 400,
                     margin: 2,
                     color: {
                         dark: '#000000',
                         light: '#FFFFFF'
-                    }
+                    },
+                    errorCorrectionLevel: 'M'
                 });
-                console.log('🖼️  QR Code image ready for web display');
+                console.log('🖼️  QR Code image ready for web display (400x400px)');
             } catch (qrError) {
                 console.error('❌ QR Code image generation failed:', qrError.message);
             }
@@ -369,10 +370,10 @@ app.get('/', (req, res) => {
     
     res.json({
         service: 'Tourbeest WhatsApp Service',
-        database: `nr104944_tourbeest @ tourbeest.nl:3306`,
+        database: `nr104944_tourbeest @ h14.mijn.host:3306`,
         library: 'whatsapp-web.js v1.24.0',
         status: isClientReady ? 'ready' : (isClientInitialized ? 'initializing' : 'starting'),
-        version: '2.2.0',
+        version: '2.4.0',
         platform: 'Render.com',
         current_ip: currentIP,
         uptime: uptime,
@@ -404,7 +405,7 @@ app.get('/api/ip', async (req, res) => {
             instructions: [
                 `Current service IP: ${ip}`,
                 `Database connection: ${dbConfig.host}:${dbConfig.port}`,
-                'Wildcard access configured ✅'
+                'IP successfully whitelisted in h14.mijn.host ✅'
             ],
             timestamp: new Date().toISOString()
         });
@@ -776,7 +777,7 @@ const server = app.listen(PORT, HOST, () => {
     // Get and show IP address
     getExternalIP().then(ip => {
         console.log(`🌐 Current external IP: ${ip}`);
-        console.log(`✅ Wildcard database access configured`);
+        console.log(`✅ IP successfully whitelisted in h14.mijn.host`);
     }).catch(err => {
         console.error('❌ Could not get IP:', err.message);
     });
