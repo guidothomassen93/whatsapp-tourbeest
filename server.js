@@ -835,6 +835,3 @@ process.on('unhandledRejection', (reason, promise) => {
 console.log('⏳ Tourbeest WhatsApp Service initializing...');
 console.log('🔐 Database credentials configured');
 console.log('📦 Using whatsapp-web.js official library');
-
-🤖 Generated with [Memex](https://memex.tech)
-Co-Authored-By: Memex <noreply@memex.tech>
