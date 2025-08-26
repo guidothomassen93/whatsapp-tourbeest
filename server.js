@@ -23,7 +23,7 @@ console.log(`⚙️  Environment: ${NODE_ENV}`);
 console.log(`🔧 Node.js: ${process.version}`);
 console.log(`🚀 Server will start on: ${HOST}:${PORT}`);
 
-// Database configuration - Updated to h14.mijn.host (removed invalid options)
+// Database configuration with connection pool
 const dbConfig = {
     host: process.env.DB_HOST || 'h14.mijn.host',
     port: process.env.DB_PORT || 3306,
@@ -31,14 +31,20 @@ const dbConfig = {
     password: process.env.DB_PASSWORD || 'Alazfv123!',
     database: process.env.DB_NAME || 'nr104944_tourbeest',
     charset: 'utf8mb4',
-    connectTimeout: 30000
+    connectionLimit: 3,
+    multipleStatements: false,
+    reconnect: true
 };
 
 console.log('📊 Database configuration:');
 console.log(`   Host: ${dbConfig.host}:${dbConfig.port}`);
 console.log(`   User: ${dbConfig.user}`);
 console.log(`   Database: ${dbConfig.database}`);
+console.log(`   Connection Limit: ${dbConfig.connectionLimit}`);
 console.log(`   Password: ${dbConfig.password ? '***configured***' : 'NOT SET'}`);
+
+// Global database pool
+let dbPool = null;
 
 // Global WhatsApp state
 let whatsappClient = null;
@@ -86,17 +92,32 @@ async function getExternalIP() {
     });
 }
 
-// Database connection with updated host
+// Initialize database pool
+function initializeDatabase() {
+    try {
+        console.log('🔧 Initializing database connection pool...');
+        dbPool = mysql.createPool(dbConfig);
+        console.log('✅ Database pool created successfully');
+        return true;
+    } catch (error) {
+        console.error('❌ Database pool creation failed:', error.message);
+        return false;
+    }
+}
+
+// Database connection using pool
 async function connectDatabase() {
+    if (!dbPool) {
+        console.error('❌ Database pool not initialized');
+        return null;
+    }
+
     try {
         stats.databaseConnections++;
-        console.log(`🔌 Connecting to database: ${dbConfig.database}@${dbConfig.host}:${dbConfig.port}`);
+        console.log(`🔌 Getting connection from pool (total: ${stats.databaseConnections})`);
         
-        const connection = await mysql.createConnection(dbConfig);
-        await connection.ping();
-        
-        console.log('✅ Database connected successfully!');
-        console.log(`📈 Total DB connections: ${stats.databaseConnections}`);
+        const connection = await dbPool.getConnection();
+        console.log('✅ Database connection obtained from pool');
         
         return connection;
     } catch (error) {
@@ -112,6 +133,8 @@ async function connectDatabase() {
             console.error('🚨 Database not found - check database name');
         } else if (error.code === 'ECONNREFUSED') {
             console.error('🚨 Connection refused - check host/port and firewall');
+        } else if (error.code === 'ER_TOO_MANY_USER_CONNECTIONS') {
+            console.error('🚨 Too many database connections - using connection pool now');
         }
         
         stats.totalErrors++;
@@ -119,17 +142,18 @@ async function connectDatabase() {
     }
 }
 
-// Database status update with fixed table creation
+// Database status update with proper connection handling
 async function updateDatabaseStatus(status, phone = null) {
+    let connection = null;
     try {
-        const db = await connectDatabase();
-        if (!db) {
+        connection = await connectDatabase();
+        if (!connection) {
             console.warn('⚠️  Cannot update database status - no connection');
             return;
         }
         
-        // Create table with correct schema
-        await db.execute(`
+        // Create table with correct schema (only if not exists)
+        await connection.execute(`
             CREATE TABLE IF NOT EXISTS whatsapp_service_status (
                 id INT PRIMARY KEY AUTO_INCREMENT,
                 status VARCHAR(50) NOT NULL,
@@ -144,7 +168,7 @@ async function updateDatabaseStatus(status, phone = null) {
         `);
         
         // Update status with current IP (simplified query)
-        await db.execute(`
+        await connection.execute(`
             INSERT INTO whatsapp_service_status (status, phone, last_connected, version, platform, ip_address) 
             VALUES (?, ?, NOW(), 'whatsapp-web.js-v1.24.0', 'render.com', ?) 
             ON DUPLICATE KEY UPDATE 
@@ -155,12 +179,37 @@ async function updateDatabaseStatus(status, phone = null) {
                 updated_at = NOW()
         `, [status, phone, currentIP]);
         
-        await db.end();
         console.log(`✅ Database status updated: ${status}`);
         
     } catch (error) {
         console.error('❌ Database status update failed:', error.message);
         // Don't throw error, just log it - service should continue working
+    } finally {
+        // Always release connection back to pool
+        if (connection) {
+            connection.release();
+            console.log('🔄 Database connection released to pool');
+        }
+    }
+}
+
+// Test database connection
+async function testDatabaseConnection() {
+    let connection = null;
+    try {
+        connection = await connectDatabase();
+        if (!connection) return false;
+        
+        const [rows] = await connection.execute('SELECT 1 as test');
+        return rows[0]?.test === 1;
+        
+    } catch (error) {
+        console.error('❌ Database test failed:', error.message);
+        return false;
+    } finally {
+        if (connection) {
+            connection.release();
+        }
     }
 }
 
@@ -373,12 +422,13 @@ app.get('/', (req, res) => {
         database: `nr104944_tourbeest @ h14.mijn.host:3306`,
         library: 'whatsapp-web.js v1.24.0',
         status: isClientReady ? 'ready' : (isClientInitialized ? 'initializing' : 'starting'),
-        version: '2.4.0',
+        version: '2.5.0',
         platform: 'Render.com',
         current_ip: currentIP,
         uptime: uptime,
         uptime_human: `${Math.floor(uptime / 60)}m ${uptime % 60}s`,
         database_configured: true,
+        connection_pool: true,
         stats: {
             messages_sent: stats.totalMessagesSent,
             qr_codes_generated: stats.qrCodesGenerated,
@@ -405,7 +455,8 @@ app.get('/api/ip', async (req, res) => {
             instructions: [
                 `Current service IP: ${ip}`,
                 `Database connection: ${dbConfig.host}:${dbConfig.port}`,
-                'IP successfully whitelisted in h14.mijn.host ✅'
+                'IP successfully whitelisted in h14.mijn.host ✅',
+                'Connection pool active ✅'
             ],
             timestamp: new Date().toISOString()
         });
@@ -420,25 +471,16 @@ app.get('/api/ip', async (req, res) => {
 
 // Detailed status endpoint
 app.get('/api/status', async (req, res) => {
-    // Test database connection
+    // Test database connection using pool
     let dbStatus = 'unknown';
     let dbTestResult = null;
     
-    try {
-        const db = await connectDatabase();
-        if (db) {
-            dbStatus = 'connected';
-            
-            // Test query
-            const [rows] = await db.execute('SELECT 1 as test');
-            dbTestResult = rows[0];
-            
-            await db.end();
-        } else {
-            dbStatus = 'connection_failed';
-        }
-    } catch (error) {
-        dbStatus = `error: ${error.message}`;
+    const dbConnected = await testDatabaseConnection();
+    if (dbConnected) {
+        dbStatus = 'connected';
+        dbTestResult = { test: 1 };
+    } else {
+        dbStatus = 'connection_failed';
     }
     
     res.json({
@@ -458,6 +500,8 @@ app.get('/api/status', async (req, res) => {
             host: `${dbConfig.host}:${dbConfig.port}`,
             user: dbConfig.user,
             database: dbConfig.database,
+            connection_pool: true,
+            connection_limit: dbConfig.connectionLimit,
             test_query_result: dbTestResult,
             total_connections: stats.databaseConnections
         },
@@ -655,18 +699,20 @@ app.post('/api/send-message', async (req, res) => {
 
 // Test database endpoint
 app.get('/api/test-database', async (req, res) => {
+    let connection = null;
     try {
         console.log('🧪 Testing database connection...');
         
-        const db = await connectDatabase();
-        if (!db) {
+        connection = await connectDatabase();
+        if (!connection) {
             return res.json({
                 success: false,
                 message: 'Database connection failed',
                 config: {
                     host: `${dbConfig.host}:${dbConfig.port}`,
                     user: dbConfig.user,
-                    database: dbConfig.database
+                    database: dbConfig.database,
+                    connection_pool: true
                 }
             });
         }
@@ -676,7 +722,7 @@ app.get('/api/test-database', async (req, res) => {
         
         // Test 1: Basic query
         try {
-            const [rows] = await db.execute('SELECT 1 as test, NOW() as current_time');
+            const [rows] = await connection.execute('SELECT 1 as test, NOW() as current_time');
             tests.push({
                 test: 'Basic SELECT',
                 status: 'success',
@@ -692,7 +738,7 @@ app.get('/api/test-database', async (req, res) => {
         
         // Test 2: Show tables
         try {
-            const [rows] = await db.execute('SHOW TABLES');
+            const [rows] = await connection.execute('SHOW TABLES');
             tests.push({
                 test: 'Show tables',
                 status: 'success',
@@ -706,15 +752,15 @@ app.get('/api/test-database', async (req, res) => {
             });
         }
         
-        await db.end();
-        
         res.json({
             success: true,
             message: 'Database tests completed',
             database: {
                 host: `${dbConfig.host}:${dbConfig.port}`,
                 user: dbConfig.user,
-                database: dbConfig.database
+                database: dbConfig.database,
+                connection_pool: true,
+                connection_limit: dbConfig.connectionLimit
             },
             tests: tests,
             timestamp: new Date().toISOString()
@@ -727,6 +773,10 @@ app.get('/api/test-database', async (req, res) => {
             error: error.message,
             timestamp: new Date().toISOString()
         });
+    } finally {
+        if (connection) {
+            connection.release();
+        }
     }
 });
 
@@ -768,11 +818,18 @@ const server = app.listen(PORT, HOST, () => {
     console.log(`📡 Server: http://${HOST}:${PORT}`);
     console.log(`🗄️  Database: ${dbConfig.database}@${dbConfig.host}:${dbConfig.port}`);
     console.log(`👤 DB User: ${dbConfig.user}`);
+    console.log(`🔗 Connection Pool: ${dbConfig.connectionLimit} max connections`);
     console.log(`🌐 Platform: Render.com`);
     console.log(`⚙️  Environment: ${NODE_ENV}`);
     console.log(`🔧 Node.js: ${process.version}`);
     console.log('🌟 =====================================');
     console.log('');
+    
+    // Initialize database pool
+    const dbInitialized = initializeDatabase();
+    if (!dbInitialized) {
+        console.error('❌ Database pool initialization failed - service will run without database');
+    }
     
     // Get and show IP address
     getExternalIP().then(ip => {
@@ -783,15 +840,16 @@ const server = app.listen(PORT, HOST, () => {
     });
     
     // Test database connection on startup
-    console.log('🧪 Testing database connection...');
-    connectDatabase().then(db => {
-        if (db) {
-            console.log('✅ Database connection test successful');
-            db.end();
-        } else {
-            console.error('❌ Database connection test failed');
-        }
-    });
+    if (dbInitialized) {
+        console.log('🧪 Testing database connection pool...');
+        testDatabaseConnection().then(success => {
+            if (success) {
+                console.log('✅ Database connection pool test successful');
+            } else {
+                console.error('❌ Database connection pool test failed');
+            }
+        });
+    }
     
     // Initialize WhatsApp
     console.log('⏳ Starting WhatsApp client in 5 seconds...');
@@ -811,6 +869,16 @@ const gracefulShutdown = (signal) => {
                 console.log('📱 WhatsApp client closed');
             } catch (error) {
                 console.error('❌ Error closing WhatsApp:', error.message);
+            }
+        }
+        
+        // Close database pool
+        if (dbPool) {
+            try {
+                await dbPool.end();
+                console.log('🗄️  Database pool closed');
+            } catch (error) {
+                console.error('❌ Error closing database pool:', error.message);
             }
         }
         
