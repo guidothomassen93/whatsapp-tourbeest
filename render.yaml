@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: whatsapp-tourbeest
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    plan: free
+    region: frankfurt  # Closer to Netherlands
+    env:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=512"
+    healthCheckPath: /
+    numInstances: 1
+    disk:
+      name: whatsapp-session
+      mountPath: /app/whatsapp-session
+      sizeGB: 1
+
+🤖 Generated with [Memex](https://memex.tech)
+Co-Authored-By: Memex <noreply@memex.tech>
