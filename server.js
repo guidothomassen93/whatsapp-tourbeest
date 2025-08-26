@@ -130,7 +130,7 @@ async function updateDatabaseStatus(status, phone = null) {
     }
 }
 
-// WhatsApp Client Initialization
+// WhatsApp Client Initialization with improved Render.com config
 async function initializeWhatsApp() {
     if (isClientInitialized) {
         console.log('⚠️  WhatsApp client already initialized');
@@ -141,24 +141,56 @@ async function initializeWhatsApp() {
         connectionAttempts++;
         console.log(`🔄 Initializing WhatsApp client (attempt ${connectionAttempts})`);
         
+        // Enhanced Puppeteer config for Render.com
+        const puppeteerConfig = {
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--disable-gpu',
+                '--disable-web-security',
+                '--single-process',
+                '--disable-features=TranslateUI',
+                '--disable-features=BlinkGenPropertyTrees',
+                '--disable-ipc-flooding-protection',
+                '--disable-renderer-backgrounding',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-client-side-phishing-detection',
+                '--disable-component-update',
+                '--disable-default-apps',
+                '--disable-domain-reliability',
+                '--disable-extensions',
+                '--disable-sync',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--disable-field-trial-config',
+                '--disable-back-forward-cache',
+                '--disable-hang-monitor',
+                '--disable-prompt-on-repost',
+                '--disable-background-networking',
+                '--disable-ipc-flooding-protection',
+                '--memory-pressure-off',
+                '--max_old_space_size=4096'
+            ],
+            defaultViewport: null,
+            ignoreHTTPSErrors: true,
+            slowMo: 100
+        };
+
         whatsappClient = new Client({
             authStrategy: new LocalAuth({
                 clientId: 'tourbeest-render-nr104944',
                 dataPath: './whatsapp-session'
             }),
-            puppeteer: {
-                headless: true,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-first-run',
-                    '--no-zygote',
-                    '--disable-gpu',
-                    '--disable-web-security',
-                    '--single-process'
-                ]
+            puppeteer: puppeteerConfig,
+            webVersionCache: {
+                type: 'remote',
+                remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
             }
         });
 
@@ -172,12 +204,19 @@ async function initializeWhatsApp() {
             console.log(`🔢 QR Code #${stats.qrCodesGenerated}`);
             console.log('🔗 Available at: /api/qr');
             
-            // Generate QR in terminal
+            // Generate QR in terminal (smaller for better visibility)
             qrcode.generate(qr, { small: true });
             
             // Generate QR as data URL for web
             try {
-                qrCodeDataURL = await QRCode.toDataURL(qr);
+                qrCodeDataURL = await QRCode.toDataURL(qr, {
+                    width: 512,
+                    margin: 2,
+                    color: {
+                        dark: '#000000',
+                        light: '#FFFFFF'
+                    }
+                });
                 console.log('🖼️  QR Code image ready for web display');
             } catch (qrError) {
                 console.error('❌ QR Code image generation failed:', qrError.message);
@@ -203,6 +242,13 @@ async function initializeWhatsApp() {
             qrCodeDataURL = null;
             isClientReady = false;
             await updateDatabaseStatus('auth_failed');
+            
+            // Auto-restart on auth failure
+            console.log('🔄 Restarting WhatsApp client after auth failure...');
+            setTimeout(() => {
+                isClientInitialized = false;
+                initializeWhatsApp();
+            }, 10000);
         });
 
         // Client ready
@@ -229,6 +275,13 @@ async function initializeWhatsApp() {
             clientInfo = null;
             lastError = `Disconnected: ${reason}`;
             await updateDatabaseStatus('disconnected');
+            
+            // Auto-reconnect
+            console.log('🔄 Attempting to reconnect...');
+            setTimeout(() => {
+                isClientInitialized = false;
+                initializeWhatsApp();
+            }, 15000);
         });
 
         // Loading screen
@@ -238,8 +291,8 @@ async function initializeWhatsApp() {
 
         // Initialize client
         isClientInitialized = true;
+        console.log('🚀 WhatsApp client initialization started with enhanced config');
         await whatsappClient.initialize();
-        console.log('🚀 WhatsApp client initialization started');
         
     } catch (error) {
         console.error('❌ WhatsApp initialization error:', error);
@@ -247,10 +300,15 @@ async function initializeWhatsApp() {
         stats.totalErrors++;
         isClientInitialized = false;
         
-        // Retry logic
-        if (connectionAttempts < 3) {
-            console.log(`🔄 Retrying in 30 seconds... (${connectionAttempts}/3)`);
-            setTimeout(initializeWhatsApp, 30000);
+        // Retry logic with exponential backoff
+        const retryDelay = Math.min(30000 * connectionAttempts, 300000); // Max 5 minutes
+        if (connectionAttempts < 5) {
+            console.log(`🔄 Retrying in ${retryDelay/1000} seconds... (${connectionAttempts}/5)`);
+            setTimeout(() => {
+                initializeWhatsApp();
+            }, retryDelay);
+        } else {
+            console.error('🚨 Max retry attempts reached. Manual restart required.');
         }
     }
 }
@@ -283,7 +341,7 @@ app.get('/', (req, res) => {
         database: 'nr104944_tourbeest',
         library: 'whatsapp-web.js v1.24.0',
         status: isClientReady ? 'ready' : (isClientInitialized ? 'initializing' : 'starting'),
-        version: '2.0.0',
+        version: '2.1.0',
         platform: 'Render.com',
         uptime: uptime,
         uptime_human: `${Math.floor(uptime / 60)}m ${uptime % 60}s`,
@@ -706,3 +764,6 @@ process.on('unhandledRejection', (reason, promise) => {
 console.log('⏳ Tourbeest WhatsApp Service initializing...');
 console.log('🔐 Database credentials configured');
 console.log('📦 Using whatsapp-web.js official library');
+
+🤖 Generated with [Memex](https://memex.tech)
+Co-Authored-By: Memex <noreply@memex.tech>
