@@ -25,7 +25,7 @@ console.log(`🚀 Server will start on: ${HOST}:${PORT}`);
 
 // Database configuration - Updated to tourbeest.nl
 const dbConfig = {
-    host: process.env.DB_HOST || 'tourbeest.nl',
+    host: process.env.DB_HOST || 'h14.mijn.host',
     port: process.env.DB_PORT || 3306,
     user: process.env.DB_USER || 'nr104944_tourbeest',
     password: process.env.DB_PASSWORD || 'Alazfv123!',
