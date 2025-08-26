@@ -1,6 +1,6 @@
 // Tourbeest WhatsApp Service - Database Configured
 // Using whatsapp-web.js official library
-// Database: nr104944_tourbeest @ localhost
+// Database: nr104944_tourbeest @ tourbeest.nl:3306
 
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
@@ -8,10 +8,11 @@ const QRCode = require('qrcode');
 const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
+const https = require('https');
 
 console.log('🎵 Tourbeest WhatsApp Service - Database Configured');
 console.log('📦 Using whatsapp-web.js library v1.24.0');
-console.log('🗄️  Database: nr104944_tourbeest');
+console.log('🗄️  Database: nr104944_tourbeest @ tourbeest.nl:3306');
 
 // Server configuration
 const PORT = process.env.PORT || 3001;
@@ -22,9 +23,10 @@ console.log(`⚙️  Environment: ${NODE_ENV}`);
 console.log(`🔧 Node.js: ${process.version}`);
 console.log(`🚀 Server will start on: ${HOST}:${PORT}`);
 
-// Database configuration - JOUW GEGEVENS
+// Database configuration - Updated to tourbeest.nl
 const dbConfig = {
-    host: process.env.DB_HOST || 'localhost',
+    host: process.env.DB_HOST || 'tourbeest.nl',
+    port: process.env.DB_PORT || 3306,
     user: process.env.DB_USER || 'nr104944_tourbeest',
     password: process.env.DB_PASSWORD || 'Alazfv123!',
     database: process.env.DB_NAME || 'nr104944_tourbeest',
@@ -35,7 +37,7 @@ const dbConfig = {
 };
 
 console.log('📊 Database configuration:');
-console.log(`   Host: ${dbConfig.host}`);
+console.log(`   Host: ${dbConfig.host}:${dbConfig.port}`);
 console.log(`   User: ${dbConfig.user}`);
 console.log(`   Database: ${dbConfig.database}`);
 console.log(`   Password: ${dbConfig.password ? '***configured***' : 'NOT SET'}`);
@@ -50,6 +52,7 @@ let qrCodeDataURL = null;
 let lastQRGenerated = null;
 let connectionAttempts = 0;
 let lastError = null;
+let currentIP = null;
 
 // Service statistics
 const stats = {
@@ -60,16 +63,41 @@ const stats = {
     databaseConnections: 0
 };
 
-// Database connection with your credentials
+// Function to get external IP
+async function getExternalIP() {
+    return new Promise((resolve, reject) => {
+        https.get('https://api.ipify.org?format=json', (res) => {
+            let data = '';
+            
+            res.on('data', (chunk) => {
+                data += chunk;
+            });
+            
+            res.on('end', () => {
+                try {
+                    const result = JSON.parse(data);
+                    currentIP = result.ip;
+                    resolve(result.ip);
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        }).on('error', (error) => {
+            reject(error);
+        });
+    });
+}
+
+// Database connection with updated host
 async function connectDatabase() {
     try {
         stats.databaseConnections++;
-        console.log(`🔌 Connecting to database: ${dbConfig.database}@${dbConfig.host}`);
+        console.log(`🔌 Connecting to database: ${dbConfig.database}@${dbConfig.host}:${dbConfig.port}`);
         
         const connection = await mysql.createConnection(dbConfig);
         await connection.ping();
         
-        console.log('✅ Database connected successfully');
+        console.log('✅ Database connected successfully!');
         console.log(`📈 Total DB connections: ${stats.databaseConnections}`);
         
         return connection;
@@ -84,6 +112,8 @@ async function connectDatabase() {
             console.error('🚨 Host not found - check hostname');
         } else if (error.code === 'ER_BAD_DB_ERROR') {
             console.error('🚨 Database not found - check database name');
+        } else if (error.code === 'ECONNREFUSED') {
+            console.error('🚨 Connection refused - check host/port and firewall');
         }
         
         stats.totalErrors++;
@@ -109,18 +139,19 @@ async function updateDatabaseStatus(status, phone = null) {
                 last_connected TIMESTAMP,
                 version VARCHAR(50),
                 platform VARCHAR(50),
+                ip_address VARCHAR(50),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
             )
         `);
         
-        // Update status
+        // Update status with current IP
         await db.execute(`
-            INSERT INTO whatsapp_service_status (id, status, phone, last_connected, version, platform) 
-            VALUES (1, ?, ?, NOW(), 'whatsapp-web.js-v1.24.0', 'render.com') 
+            INSERT INTO whatsapp_service_status (id, status, phone, last_connected, version, platform, ip_address) 
+            VALUES (1, ?, ?, NOW(), 'whatsapp-web.js-v1.24.0', 'render.com', ?) 
             ON DUPLICATE KEY UPDATE 
-                status = ?, phone = ?, last_connected = NOW(), updated_at = NOW()
-        `, [status, phone, status, phone]);
+                status = ?, phone = ?, last_connected = NOW(), ip_address = ?, updated_at = NOW()
+        `, [status, phone, currentIP, status, phone, currentIP]);
         
         await db.end();
         console.log(`📝 Database status updated: ${status}`);
@@ -338,11 +369,12 @@ app.get('/', (req, res) => {
     
     res.json({
         service: 'Tourbeest WhatsApp Service',
-        database: 'nr104944_tourbeest',
+        database: `nr104944_tourbeest @ tourbeest.nl:3306`,
         library: 'whatsapp-web.js v1.24.0',
         status: isClientReady ? 'ready' : (isClientInitialized ? 'initializing' : 'starting'),
-        version: '2.1.0',
+        version: '2.2.0',
         platform: 'Render.com',
+        current_ip: currentIP,
         uptime: uptime,
         uptime_human: `${Math.floor(uptime / 60)}m ${uptime % 60}s`,
         database_configured: true,
@@ -354,6 +386,35 @@ app.get('/', (req, res) => {
         },
         timestamp: new Date().toISOString()
     });
+});
+
+// Get IP endpoint
+app.get('/api/ip', async (req, res) => {
+    try {
+        const ip = await getExternalIP();
+        
+        res.json({
+            message: 'Render.com Service IP Information',
+            external_ip: ip,
+            database_host: `${dbConfig.host}:${dbConfig.port}`,
+            connection_info: {
+                remote_address: req.connection?.remoteAddress,
+                user_agent: req.get('User-Agent')
+            },
+            instructions: [
+                `Current service IP: ${ip}`,
+                `Database connection: ${dbConfig.host}:${dbConfig.port}`,
+                'Wildcard access configured ✅'
+            ],
+            timestamp: new Date().toISOString()
+        });
+        
+    } catch (error) {
+        res.json({
+            error: 'Could not determine IP',
+            message: error.message
+        });
+    }
 });
 
 // Detailed status endpoint
@@ -393,7 +454,7 @@ app.get('/api/status', async (req, res) => {
         },
         database: {
             status: dbStatus,
-            host: dbConfig.host,
+            host: `${dbConfig.host}:${dbConfig.port}`,
             user: dbConfig.user,
             database: dbConfig.database,
             test_query_result: dbTestResult,
@@ -408,7 +469,8 @@ app.get('/api/status', async (req, res) => {
             platform: 'Render.com',
             node_version: process.version,
             uptime_seconds: Math.floor(process.uptime()),
-            memory_usage: process.memoryUsage()
+            memory_usage: process.memoryUsage(),
+            external_ip: currentIP
         },
         statistics: stats,
         timestamp: new Date().toISOString()
@@ -601,7 +663,7 @@ app.get('/api/test-database', async (req, res) => {
                 success: false,
                 message: 'Database connection failed',
                 config: {
-                    host: dbConfig.host,
+                    host: `${dbConfig.host}:${dbConfig.port}`,
                     user: dbConfig.user,
                     database: dbConfig.database
                 }
@@ -649,7 +711,7 @@ app.get('/api/test-database', async (req, res) => {
             success: true,
             message: 'Database tests completed',
             database: {
-                host: dbConfig.host,
+                host: `${dbConfig.host}:${dbConfig.port}`,
                 user: dbConfig.user,
                 database: dbConfig.database
             },
@@ -686,6 +748,7 @@ app.use((req, res) => {
         message: `Endpoint ${req.method} ${req.path} not found`,
         available_endpoints: [
             'GET /',
+            'GET /api/ip',
             'GET /api/status',
             'GET /api/qr',
             'GET /api/qr/image',
@@ -702,13 +765,21 @@ const server = app.listen(PORT, HOST, () => {
     console.log('🎵 Tourbeest WhatsApp Service Started');
     console.log('🌟 =====================================');
     console.log(`📡 Server: http://${HOST}:${PORT}`);
-    console.log(`🗄️  Database: ${dbConfig.database}@${dbConfig.host}`);
+    console.log(`🗄️  Database: ${dbConfig.database}@${dbConfig.host}:${dbConfig.port}`);
     console.log(`👤 DB User: ${dbConfig.user}`);
     console.log(`🌐 Platform: Render.com`);
     console.log(`⚙️  Environment: ${NODE_ENV}`);
     console.log(`🔧 Node.js: ${process.version}`);
     console.log('🌟 =====================================');
     console.log('');
+    
+    // Get and show IP address
+    getExternalIP().then(ip => {
+        console.log(`🌐 Current external IP: ${ip}`);
+        console.log(`✅ Wildcard database access configured`);
+    }).catch(err => {
+        console.error('❌ Could not get IP:', err.message);
+    });
     
     // Test database connection on startup
     console.log('🧪 Testing database connection...');
